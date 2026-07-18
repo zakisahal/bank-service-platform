@@ -312,7 +312,7 @@ the same stream forever isn't actually a DLQ.
 
 Multi-stage Dockerfile (`service/Dockerfile`), both final stages built
 `FROM gcr.io/distroless/static-debian12:nonroot` pinned by digest (not just
-tag) with the Go builder stage (`golang:1.25-bookworm`) also pinned by
+tag) with the Go builder stage (`golang:1.26-bookworm`) also pinned by
 digest. `CGO_ENABLED=0` gives a fully static binary (pgx is pure Go, no
 libpq needed), which is what lets the final image be distroless at all - no
 shell, no package manager, nothing for an attacker with code execution to
@@ -321,6 +321,31 @@ pivot with. Runs as the distroless `nonroot` numeric UID (65532), with
 Kubernetes `securityContext` level (`deployment.yaml`) - the app never
 writes to disk, so read-only root is free correctness, not a constraint
 worked around.
+
+**Digest pinning has a real cost, and it showed up during this build**:
+`govulncheck` (run in CI, see below) failed with 27 findings the first time
+it ran for real - 26 were Go standard-library CVEs patched in `go1.25.2`
+through `go1.25.12`, all inherited purely because `go.mod` pinned an exact,
+already-stale `go 1.25.0`, plus one real one, `GO-2026-5004` (a SQL-
+injection-via-placeholder-confusion bug in `github.com/jackc/pgx/v5
+v5.7.2`, fixed in `v5.9.2`). Fixed by bumping `go.mod` to `go 1.26.5`
+(verified locally: Go's own toolchain manager auto-downloaded 1.26.5 on the
+next `go build`, no manual toolchain install needed), upgrading pgx to
+v5.10.0, and re-pulling the Docker base image digest to a `golang:1.26-bookworm`
+build that already ships `go1.26.5`. `govulncheck ./...` now reports zero
+findings, re-verified locally, not just asserted. The lesson this is meant
+to make honest rather than gloss over: **pinning by digest buys
+reproducibility, not currency** - a digest pinned once and never revisited
+silently accumulates every CVE disclosed after that point, and something
+has to actually re-pin it periodically (Renovate/Dependabot against digests,
+not just tags, is the real answer; this repo doesn't have that bot wired
+up - see "What was left out"). Trivy would likely have caught the pgx CVE
+as a scanned Go module dependency; Go-stdlib CVEs tied to the toolchain
+version a binary was built with are exactly the class of finding a
+call-graph-aware tool like `govulncheck` is purpose-built to catch and a
+general image scanner may not reliably flag - which is the actual argument
+for running both as separate, complementary gates rather than treating one
+as a superset of the other.
 
 **`HEALTHCHECK`** was the one place distroless's lack of a shell required a
 workaround: `HEALTHCHECK CMD` normally shells out to `curl`/`wget`, neither
@@ -526,6 +551,14 @@ is not built here (see "What was left out").
 
 Time-boxed against a large brief; these are cuts, not oversights:
 
+- **No automated digest-bump bot (Renovate/Dependabot).** Every pinned
+  base-image digest and Go module version in this repo will go stale the
+  same way `go.mod`'s original `go 1.25.0` pin did (see "Container and
+  supply chain" - this actually happened while building this repo, not a
+  hypothetical). A scheduled bot that opens a PR when a pinned digest has a
+  newer patched version available is the real fix for "pinning trades
+  currency for reproducibility"; this repo has the reproducibility half and
+  not the automation half.
 - **No IAM permissions boundary on the `terraform_apply` role.** That role
   can create new IAM roles and attach policies to them (needed - this
   stack's own `iam` module does exactly that), which is a
