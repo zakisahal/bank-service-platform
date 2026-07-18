@@ -13,18 +13,55 @@ spec:
   groups:
     - name: bank-service.rules
       rules:
-        - alert: BankServiceHighErrorRate
+        # Multi-window, multi-burn-rate alerts against the 30-day, 99.9%
+        # success-rate SLO for GET /api/accounts/{id} (see DECISIONS.md /
+        # decisions-and-tradeoffs.md "SLO and alerting"). Two windows each,
+        # both required, so a single noisy 5-minute spike can't trip either
+        # one - only sustained budget burn does. This is what makes the
+        # slow-burn tier able to catch a degradation that never spikes hard
+        # enough to cross a static "5% for 5 minutes" threshold: a
+        # persistent 0.15% error rate never trips that, but it burns the
+        # 30-day budget 1.5x too fast, and the slow-burn rule below catches
+        # exactly that.
+        - alert: BankServiceSLOFastBurn
           expr: |
-            sum(rate(http_requests_total{route=~"/api/.*", status=~"Internal Server Error"}[5m]))
-            /
-            sum(rate(http_requests_total{route=~"/api/.*"}[5m]))
-            > 0.05
-          for: 5m
+            (
+              sum(rate(http_requests_total{route="/api/accounts/{id}",status="Internal Server Error"}[1h]))
+              /
+              sum(rate(http_requests_total{route="/api/accounts/{id}"}[1h]))
+            ) > (14.4 * 0.001)
+            and
+            (
+              sum(rate(http_requests_total{route="/api/accounts/{id}",status="Internal Server Error"}[5m]))
+              /
+              sum(rate(http_requests_total{route="/api/accounts/{id}"}[5m]))
+            ) > (14.4 * 0.001)
+          for: 2m
           labels:
             severity: critical
           annotations:
-            summary: "bank-service 5xx rate above 5%"
-            description: "Error rate has been above 5% for 5 minutes on the accounts API. Check recent deploys and DB health."
+            summary: "bank-service burning the 30-day error budget 14.4x too fast"
+            description: "At this rate the 30-day SLO's entire error budget would be gone in ~2 days. Sustained over both a 1h and a 5m window, so this isn't a single blip. Page now."
+
+        - alert: BankServiceSLOSlowBurn
+          expr: |
+            (
+              sum(rate(http_requests_total{route="/api/accounts/{id}",status="Internal Server Error"}[3d]))
+              /
+              sum(rate(http_requests_total{route="/api/accounts/{id}"}[3d]))
+            ) > (1 * 0.001)
+            and
+            (
+              sum(rate(http_requests_total{route="/api/accounts/{id}",status="Internal Server Error"}[6h]))
+              /
+              sum(rate(http_requests_total{route="/api/accounts/{id}"}[6h]))
+            ) > (1 * 0.001)
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "bank-service slow-burning the 30-day error budget"
+            description: "Error rate has sat at or above the SLO's own threshold for 6+ hours straight - never spiky enough to trip a single-window rule, but on pace to exhaust the 30-day budget well before it resets. Ticket, not a page: investigate within the business day."
 
         - alert: BankServiceHighLatency
           expr: |
