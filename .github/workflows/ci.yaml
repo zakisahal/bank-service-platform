@@ -87,7 +87,12 @@ jobs:
         run: docker build --target ${{ matrix.target }} -t bank-${{ matrix.target == 'api' && 'service' || 'consumer' }}:${{ github.sha }} service
 
       - name: Trivy vulnerability scan
-        uses: aquasecurity/trivy-action@0.28.0
+        # Pinned by commit SHA, not a mutable tag - same reasoning as the
+        # Docker base image digests elsewhere in this repo. The previous
+        # pin (@0.28.0) was simply wrong: this action's tags are "vX.Y.Z",
+        # so "0.28.0" without the "v" (and without ever having existed as
+        # a release) failed to resolve at all.
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: bank-${{ matrix.target == 'api' && 'service' || 'consumer' }}:${{ github.sha }}
           format: table
