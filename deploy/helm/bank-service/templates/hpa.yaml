@@ -1,0 +1,30 @@
+{{- if eq .Values.autoscaling.strategy "hpa" }}
+# CPU-based fallback for clusters without the KEDA operator installed. Kept
+# honest about its limitation rather than presented as the preferred
+# choice: this service is I/O-bound (blocked on Postgres round-trips), so a
+# pod can be fully saturated - its connection pool exhausted, request queue
+# growing - while sitting at low CPU. CPU utilization will scale out later
+# than the service actually needed it to. See autoscaling.strategy: "keda"
+# in values.yaml and DECISIONS.md "Autoscaling metric" for the signal that
+# actually reflects this service's bottleneck.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "bank-service.fullname" . }}
+  labels:
+    {{- include "bank-service.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "bank-service.fullname" . }}
+  minReplicas: {{ .Values.autoscaling.hpa.minReplicas }}
+  maxReplicas: {{ .Values.autoscaling.hpa.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.autoscaling.hpa.targetCPUUtilizationPercentage }}
+{{- end }}

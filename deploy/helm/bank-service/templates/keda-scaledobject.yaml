@@ -1,0 +1,31 @@
+{{- if eq .Values.autoscaling.strategy "keda" }}
+# Requires the KEDA operator in-cluster (not installed by this chart - see
+# README.md). KEDA creates and manages its own HorizontalPodAutoscaler
+# under the hood from this ScaledObject, so this replaces hpa.yaml entirely
+# rather than working alongside it (see autoscaling.strategy in
+# values.yaml, mutually exclusive with the "hpa" path).
+#
+# Scaling signal: average in-flight HTTP requests per pod
+# (http_requests_in_flight, see service/internal/httpserver/metrics.go),
+# not CPU. This service is I/O-bound - concurrency is what tells you it's
+# actually saturated; CPU doesn't. See DECISIONS.md "Autoscaling metric".
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ include "bank-service.fullname" . }}
+  labels:
+    {{- include "bank-service.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    name: {{ include "bank-service.fullname" . }}
+  minReplicaCount: {{ .Values.autoscaling.keda.minReplicas }}
+  maxReplicaCount: {{ .Values.autoscaling.keda.maxReplicas }}
+  pollingInterval: {{ .Values.autoscaling.keda.pollingInterval }}
+  cooldownPeriod: {{ .Values.autoscaling.keda.cooldownPeriod }}
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: {{ .Values.autoscaling.keda.prometheusServerAddress | quote }}
+        query: {{ tpl .Values.autoscaling.keda.query . | quote }}
+        threshold: {{ .Values.autoscaling.keda.threshold | quote }}
+{{- end }}

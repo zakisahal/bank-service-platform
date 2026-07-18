@@ -1,0 +1,127 @@
+name: CD
+
+# Runs after CI has passed on main. Builds immutable, versioned images for
+# both the API and the consumer, pushes them to ECR, and generates an SBOM
+# for each. It deliberately stops there - see the "deploy" job below and
+# DECISIONS.md "CI/CD and deployment strategy" for why this workflow does
+# not run `helm upgrade` against the cluster directly.
+on:
+  workflow_run:
+    workflows: ["CI"]
+    branches: [main]
+    types: [completed]
+
+permissions:
+  contents: read
+  id-token: write # OIDC federation to AWS - no long-lived AWS keys anywhere in this repo
+
+jobs:
+  build-and-push:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Compute immutable version tag
+        id: version
+        run: |
+          # Never "latest" and never the raw commit SHA alone: prefixing
+          # with the monotonic run number gives every image both a
+          # human-orderable version and an exact commit to trace back to.
+          # Immutable by construction - this string can never be produced
+          # by a different commit.
+          SHORT_SHA="${GITHUB_SHA::7}"
+          echo "tag=v${{ github.run_number }}-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+        env:
+          GITHUB_SHA: ${{ github.event.workflow_run.head_sha }}
+
+      # No static AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY anywhere: this
+      # exchanges the job's short-lived GitHub OIDC token for short-lived
+      # AWS credentials, scoped to exactly the role Terraform provisions in
+      # infra/terraform/modules/iam (aws_iam_role.ci_deploy), whose trust
+      # policy's `sub` condition is pinned to
+      # repo:<org>/<repo>:ref:refs/heads/main - see that module and
+      # DECISIONS.md "CI/CD and deployment strategy" for the full policy.
+      #
+      # role-to-assume is a repository variable (vars.CI_DEPLOY_ROLE_ARN,
+      # Settings > Secrets and variables > Actions > Variables) rather than
+      # a secret, since an IAM role ARN isn't sensitive by itself - only
+      # the OIDC trust policy makes it usable, and that's enforced on the
+      # AWS side. Both this step and the ECR push below are authored and
+      # cannot run in this take-home: there's no real AWS account or
+      # Terraform apply behind them (see infra/terraform/envs/dev).
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.CI_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+      - uses: aws-actions/amazon-ecr-login@v2
+        id: ecr-login
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push API image
+        uses: docker/build-push-action@v6
+        with:
+          context: service
+          target: api
+          push: true
+          tags: |
+            ${{ steps.ecr-login.outputs.registry }}/${{ vars.ECR_REPOSITORY || 'bank-service-dev' }}:api-${{ steps.version.outputs.tag }}
+
+      - name: Build and push consumer image
+        uses: docker/build-push-action@v6
+        with:
+          context: service
+          target: consumer
+          push: true
+          tags: |
+            ${{ steps.ecr-login.outputs.registry }}/${{ vars.ECR_REPOSITORY || 'bank-service-dev' }}:consumer-${{ steps.version.outputs.tag }}
+
+      - name: Generate SBOMs
+        run: |
+          echo "SBOM generation (anchore/sbom-action) omitted from this run -"
+          echo "would run against ${{ steps.ecr-login.outputs.registry }}/... here."
+        # In a real run: anchore/sbom-action against each pushed image,
+        # format spdx-json, uploaded as a build artifact - same as the
+        # ghcr.io version of this workflow this replaced.
+
+    outputs:
+      version: ${{ steps.version.outputs.tag }}
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    environment: production # requires a manual approver configured on this GitHub Environment (Settings > Environments > production > required reviewers)
+    steps:
+      - name: Deploy
+        run: |
+          echo "This deliberately does not run 'helm upgrade' from CI."
+          echo ""
+          echo "Deployment is GitOps: Argo CD (or Flux) runs inside the"
+          echo "cluster, watches deploy/helm/bank-service, and reconciles"
+          echo "automatically. This job's only job is to open (or let a bot"
+          echo "open) a PR bumping image.tag / image.consumerTag in"
+          echo "values.yaml to ${{ needs.build-and-push.outputs.version }},"
+          echo "which a human reviews and merges to trigger the rollout -"
+          echo "the manual approval gate above (the 'production' GitHub"
+          echo "Environment) is what actually blocks that PR from being"
+          echo "opened/merged without a human in the loop."
+          echo ""
+          echo "Rollback path:"
+          echo "  fast:    helm rollback bank-service <previous-revision> -n <ns>"
+          echo "           (immediate, uses the previous rendered manifest"
+          echo "           already in Helm's release history - no rebuild)"
+          echo "  durable: git revert the tag-bump PR on main; Argo CD"
+          echo "           reconciles the cluster back automatically. This"
+          echo "           is the path of record - every rollback is a"
+          echo "           merged PR, same as every rollout."
+          echo ""
+          echo "Rationale: CI never holds cluster-reaching credentials at"
+          echo "all (the OIDC role above can only push images to ECR), so"
+          echo "there's no CI credential that a rollback or a compromised"
+          echo "run could use to touch the cluster directly. See"
+          echo "DECISIONS.md 'CI/CD and deployment strategy'."

@@ -1,0 +1,57 @@
+{{- if .Values.consumer.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "bank-service.fullname" . }}-consumer
+  labels:
+    {{- include "bank-service.labels" . | nindent 4 }}
+    app.kubernetes.io/component: consumer
+spec:
+  replicas: {{ .Values.consumer.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "bank-service.name" . }}-consumer
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "bank-service.name" . }}-consumer
+        app.kubernetes.io/instance: {{ .Release.Name }}
+      annotations:
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "bank-service.serviceAccountName" . }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: consumer
+          image: "{{ .Values.image.consumerRepository }}:{{ .Values.image.consumerTag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          envFrom:
+            - secretRef:
+                # bank_service_consumer role: INSERT on processed_events and
+                # audit_log only, no access to accounts at all - see
+                # migrations/0003_roles.sql.
+                name: {{ include "bank-service.consumerSecretName" . }}
+          env:
+            - name: REDIS_ADDR
+              value: {{ include "bank-service.redisAddr" . | quote }}
+            - name: STREAM_NAME
+              value: {{ .Values.consumer.streamName | quote }}
+            - name: CONSUMER_GROUP
+              value: {{ .Values.consumer.consumerGroup | quote }}
+            - name: MAX_DELIVERIES
+              value: {{ .Values.consumer.maxDeliveries | quote }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            {{- toYaml .Values.consumer.resources | nindent 12 }}
+{{- end }}

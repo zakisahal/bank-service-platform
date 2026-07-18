@@ -1,0 +1,62 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: bank
+      POSTGRES_PASSWORD: bank
+      POSTGRES_DB: bank
+      API_DB_PASSWORD: bank-api-demo-password
+      CONSUMER_DB_PASSWORD: bank-consumer-demo-password
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./local-init:/docker-entrypoint-initdb.d:ro
+      - ./migrations:/migrations-src:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bank -d bank"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  service:
+    build:
+      context: .
+      target: api
+    environment:
+      PORT: "8080"
+      # Least-privilege role: SELECT on accounts only, see
+      # migrations/0003_roles.sql.
+      DATABASE_URL: postgres://bank_service_api:bank-api-demo-password@postgres:5432/bank?sslmode=disable
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  consumer:
+    build:
+      context: .
+      target: consumer
+    environment:
+      REDIS_ADDR: redis:6379
+      STREAM_NAME: bank.events
+      CONSUMER_GROUP: audit-log
+      MAX_DELIVERIES: "5"
+      # Least-privilege role: INSERT on processed_events/audit_log only, no
+      # access to accounts at all, see migrations/0003_roles.sql.
+      DATABASE_URL: postgres://bank_service_consumer:bank-consumer-demo-password@postgres:5432/bank?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy

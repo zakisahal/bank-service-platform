@@ -1,0 +1,11 @@
+bank-service ({{ .Chart.AppVersion }}) installed as release {{ .Release.Name }} in {{ .Release.Namespace }}.
+
+Check rollout status:
+  kubectl rollout status deployment/{{ include "bank-service.fullname" . }} -n {{ .Release.Namespace }}
+
+Port-forward and smoke test:
+  kubectl port-forward svc/{{ include "bank-service.fullname" . }} 8080:{{ .Values.service.port }} -n {{ .Release.Namespace }}
+  curl localhost:8080/healthz
+  curl localhost:8080/readyz
+  curl localhost:8080/api/accounts/acc_1001
+  curl localhost:8080/metrics

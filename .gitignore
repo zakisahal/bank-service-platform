@@ -1,0 +1,13 @@
+# Go
+service/bank-service
+service/bank-consumer
+
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+infra/terraform/envs/dev/terraform.tfvars
+
+# Editor/OS
+.DS_Store

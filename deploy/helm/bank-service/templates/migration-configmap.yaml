@@ -1,0 +1,18 @@
+{{- if .Values.migration.enabled }}
+# Mirrors service/migrations/*.sql - kept in sync manually for this
+# take-home; a real pipeline would build this ConfigMap (or run a migrate
+# container built from the same image) directly from the service source tree
+# in CI rather than duplicating the files into the chart.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "bank-service.fullname" . }}-migrations
+  labels:
+    {{- include "bank-service.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation
+data:
+{{ (.Files.Glob "files/migrations/*.sql").AsConfig | indent 2 }}
+{{- end }}

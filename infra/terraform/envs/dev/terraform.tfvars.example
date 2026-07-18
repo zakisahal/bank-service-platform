@@ -1,0 +1,14 @@
+# Copy to terraform.tfvars and adjust before a real plan/apply against an
+# actual AWS account. Defaults in variables.tf are sane for a quick demo.
+
+aws_region  = "us-east-1"
+environment = "dev"
+project     = "bank-service"
+
+enable_github_oidc = true
+github_org         = "your-org"
+github_repo        = "bank-service"
+
+# Flip these to true/false respectively for anything resembling production.
+rds_multi_az            = false
+rds_deletion_protection = false

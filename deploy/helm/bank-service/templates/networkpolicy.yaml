@@ -1,0 +1,49 @@
+{{- if .Values.networkPolicy.enabled }}
+# Default-deny with explicit allows. In AWS, Postgres is RDS (outside the
+# cluster) so egress there is enforced by the RDS security group instead of
+# this policy's podSelector - see infra/terraform/modules/rds and
+# DECISIONS.md. This rule also allows local-demo egress to an in-cluster
+# postgres pod (docker-compose parity for minikube).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "bank-service.fullname" . }}
+  labels:
+    {{- include "bank-service.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "bank-service.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector: {}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.service.targetPort }}
+    {{- if .Values.monitoring.serviceMonitor.enabled }}
+    - from:
+        - namespaceSelector:
+            {{- toYaml .Values.networkPolicy.monitoringNamespaceSelector | nindent 12 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.service.targetPort }}
+    {{- end }}
+  egress:
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+{{- end }}

@@ -1,0 +1,154 @@
+# Default values are tuned for a local minikube demo. See values-prod-notes.yaml
+# for how these change on EKS.
+
+replicaCount: 2
+
+image:
+  repository: bank-service
+  tag: local
+  pullPolicy: IfNotPresent
+  # Built from the same Dockerfile's separate "consumer" target (see
+  # service/Dockerfile) - a distinct minimal image that only ever contains
+  # the consumer binary, not the HTTP server.
+  consumerRepository: bank-consumer
+  consumerTag: local
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 250m
+    memory: 128Mi
+
+# terminationGracePeriodSeconds must comfortably exceed preStopSleepSeconds
+# plus the app's own shutdown timeout (15s, see service/internal/config) so
+# Kubernetes never SIGKILLs a pod that's still draining. See DECISIONS.md
+# "Zero-downtime rollout" for the full sequence.
+terminationGracePeriodSeconds: 30
+preStopSleepSeconds: 5
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+autoscaling:
+  # "keda" scales on in-flight request concurrency via KEDA's Prometheus
+  # scaler. This service is I/O-bound (blocked on Postgres round-trips), so
+  # CPU under-reports load: a pod can sit at 15% CPU while fully saturated
+  # waiting on the database, which is exactly when it needs to scale out.
+  # Concurrency (requests actually in flight) reflects that; CPU doesn't.
+  # "hpa" is a CPU-based fallback for clusters with no KEDA operator - kept
+  # so the chart still autoscales *something* on a bare cluster, with the
+  # limitation above called out rather than hidden.
+  strategy: keda
+  keda:
+    minReplicas: 2
+    maxReplicas: 6
+    pollingInterval: 15
+    cooldownPeriod: 120
+    prometheusServerAddress: "http://kube-prometheus-stack-prometheus.monitoring.svc:9090"
+    query: >-
+      avg(http_requests_in_flight{app_kubernetes_io_instance="{{ .Release.Name }}"})
+    threshold: "10"
+  hpa:
+    minReplicas: 2
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 70
+
+networkPolicy:
+  enabled: true
+  # Namespace label prometheus/KEDA scrape from; adjust to match your
+  # kube-prometheus-stack install. Ignored if monitoring.serviceMonitor
+  # is disabled.
+  monitoringNamespaceSelector: {}
+
+monitoring:
+  # Requires the Prometheus Operator CRDs installed in-cluster. Off by
+  # default so the chart installs cleanly on a bare minikube cluster.
+  serviceMonitor:
+    enabled: false
+    interval: 15s
+
+serviceAccount:
+  create: true
+  name: ""
+  # On EKS this would carry the IRSA role annotation, e.g.:
+  # eks.amazonaws.com/role-arn: arn:aws:iam::<account>:role/bank-service-irsa
+  annotations: {}
+
+tracing:
+  # Empty = the stdout exporter (see service/internal/tracing), so a trace
+  # path exists with zero extra infra. Point this at a real OTel collector
+  # (e.g. "http://otel-collector.monitoring.svc:4318") for real export -
+  # see DECISIONS.md "Tracing".
+  otlpEndpoint: ""
+
+# Local/demo secrets - discrete fields so the admin, api, and consumer
+# connection strings can each be composed with the right role's own
+# credentials (see service/migrations/0003_roles.sql). In AWS none of this
+# is set via Helm values at all: External Secrets Operator syncs each of
+# these from its own Secrets Manager entry instead (secrets.create: false
+# in values-prod-notes.yaml) - see infra/terraform/modules/secrets.
+secrets:
+  create: true
+  host: bank-service-postgres
+  port: 5432
+  database: bank
+  sslmode: disable
+  # Master/admin credentials. Used ONLY by the migration Job to run DDL and
+  # bootstrap the least-privilege roles below - never mounted into the app
+  # or the consumer.
+  adminUser: bank
+  adminPassword: bank
+  apiUser: bank_service_api
+  apiPassword: bank-api-demo-password
+  consumerUser: bank_service_consumer
+  consumerPassword: bank-consumer-demo-password
+
+migration:
+  enabled: true
+  image: postgres:16-alpine
+
+# Dev-only in-cluster Postgres for a self-contained minikube demo. Off by
+# default. Production points DATABASE_URL at RDS instead (see
+# infra/terraform/modules/rds) and leaves this disabled - it exists purely
+# so `helm install` works end-to-end on a bare cluster with no external
+# dependencies.
+postgres:
+  enabled: false
+  image: postgres:16-alpine
+
+# Dev-only in-cluster Redis backing the event stream (see
+# service/internal/events and DECISIONS.md "Messaging tier"). Off by
+# default for the same reason as postgres.enabled above.
+redis:
+  enabled: false
+  image: redis:7-alpine
+
+# The idempotent event consumer (service/cmd/consumer). Off by default so a
+# bare `helm install` doesn't require Redis to be reachable.
+consumer:
+  enabled: false
+  replicaCount: 1
+  streamName: bank.events
+  consumerGroup: audit-log
+  maxDeliveries: 5
+  resources:
+    requests:
+      cpu: 25m
+      memory: 32Mi
+    limits:
+      cpu: 200m
+      memory: 64Mi
+
+ingress:
+  enabled: false
+  className: alb
+  host: bank-service.example.internal
+  annotations: {}

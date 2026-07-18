@@ -1,0 +1,90 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "bank-service.fullname" . }}
+  labels:
+    {{- include "bank-service.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "bank-service.selectorLabels" . | nindent 6 }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        {{- include "bank-service.labels" . | nindent 8 }}
+      annotations:
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "bank-service.serviceAccountName" . }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: bank-service
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.targetPort }}
+          envFrom:
+            - secretRef:
+                name: {{ include "bank-service.appSecretName" . }}
+          env:
+            - name: PRESTOP_SLEEP_SECONDS
+              value: {{ .Values.preStopSleepSeconds | quote }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.tracing.otlpEndpoint | quote }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          # Zero-downtime rollout, step by step:
+          #  1. Pod is marked Terminating; Kubernetes starts removing it from
+          #     Service Endpoints in parallel with step 2 below. That removal
+          #     takes a moment to propagate to every kube-proxy/ALB target
+          #     group, which is the classic source of dropped connections
+          #     during a rollout if nothing accounts for it.
+          #  2. preStop runs *before* SIGTERM is sent, and does nothing but
+          #     sleep - the container keeps serving normally throughout,
+          #     giving step 1's propagation time to finish.
+          #  3. Only after preStop returns does the kubelet send SIGTERM.
+          #     The app's signal handler flips /readyz to 503 immediately
+          #     and calls http.Server.Shutdown(), which stops accepting new
+          #     connections but lets in-flight ones finish.
+          #  4. terminationGracePeriodSeconds (30s) comfortably covers
+          #     preStop's sleep (5s) + the app's own shutdown timeout (15s)
+          #     with margin, so kubelet never has to SIGKILL a pod that's
+          #     still draining.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bank-service", "-preStop"]
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+            timeoutSeconds: 2
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 2
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}

@@ -1,0 +1,35 @@
+# Not a real overlay file Helm consumes automatically - a documented example
+# of the `helm upgrade -f` overrides used against EKS, for reviewers. Values
+# that reference AWS resources are illustrative ARNs/names, not live ones.
+
+replicaCount: 3
+
+image:
+  repository: <account-id>.dkr.ecr.<region>.amazonaws.com/bank-service
+  tag: <git-sha>   # set by CI, never "latest"
+
+serviceAccount:
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::<account-id>:role/bank-service-irsa
+
+# Populated by External Secrets Operator syncing infra/terraform/modules/secrets'
+# Secrets Manager entry, not by `helm install -f` - this stanza is disabled in
+# prod and left to the ExternalSecret CR instead.
+secrets:
+  create: false
+
+monitoring:
+  serviceMonitor:
+    enabled: true
+
+networkPolicy:
+  monitoringNamespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: monitoring
+
+postgres:
+  enabled: false   # RDS is used instead, see infra/terraform/modules/rds
+
+ingress:
+  enabled: true
+  # fronted by the AWS Load Balancer Controller (ALB) in prod - see DECISIONS.md

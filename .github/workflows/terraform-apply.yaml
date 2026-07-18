@@ -1,0 +1,65 @@
+name: Terraform Apply
+
+# Manual only - infrastructure changes are never applied automatically on
+# merge, unlike the app's CD pipeline. A human explicitly runs this from
+# the Actions tab after reviewing a plan (e.g. the one from the "terraform"
+# job in ci.yaml, or a plan attached to the PR).
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "apply" to confirm you have reviewed a plan for this exact commit'
+        required: true
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    # terraform-apply is a distinct GitHub Environment from "production"
+    # (Settings > Environments), with its own required reviewers - the
+    # manual approval gate is this Environment's protection rule, not
+    # anything in this workflow file itself. The terraform_apply OIDC
+    # role's trust policy (modules/iam) is scoped to
+    # repo:<org>/<repo>:environment:terraform-apply specifically, so a
+    # token minted for any other workflow/environment cannot assume it,
+    # even if this file were compromised.
+    environment: terraform-apply
+    defaults:
+      run:
+        working-directory: infra/terraform/envs/dev
+    steps:
+      - name: Require explicit confirmation
+        if: ${{ github.event.inputs.confirm != 'apply' }}
+        run: |
+          echo "::error::Re-run with confirm=apply. Refusing to proceed without explicit confirmation."
+          exit 1
+
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.5.7
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.TF_APPLY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+      - run: terraform init -input=false
+      - run: terraform plan -input=false -no-color -out=tfplan
+      - run: terraform apply -input=false -auto-approve tfplan
+        # -auto-approve here is safe specifically because the human
+        # approval already happened at the Environment gate above and at
+        # the confirm=apply input - this isn't skipping review, it's
+        # avoiding a second, redundant interactive prompt in a
+        # non-interactive CI shell.
+
+    # Not run as part of this take-home: no real AWS account exists behind
+    # TF_APPLY_ROLE_ARN. Authored so the trust policy in modules/iam has a
+    # real caller to be scoped against, per the brief's "implement it if
+    # you deploy for real, or document the trust policy" - see
+    # DECISIONS.md "CI/CD and deployment strategy".

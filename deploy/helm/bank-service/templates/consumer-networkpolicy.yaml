@@ -1,0 +1,45 @@
+{{- if and .Values.networkPolicy.enabled .Values.consumer.enabled }}
+# The consumer takes no inbound traffic at all (it's a stream reader, not a
+# server) - default-deny with zero ingress rules, egress only to DNS,
+# Postgres, and Redis. In AWS, Redis is a managed broker outside the
+# cluster (see DECISIONS.md "Messaging tier"), so that egress would instead
+# be enforced by the broker's own security group, same pattern as RDS.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "bank-service.fullname" . }}-consumer
+  labels:
+    {{- include "bank-service.labels" . | nindent 4 }}
+    app.kubernetes.io/component: consumer
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "bank-service.name" . }}-consumer
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress: []
+  egress:
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: redis
+      ports:
+        - protocol: TCP
+          port: 6379
+{{- end }}

@@ -1,0 +1,67 @@
+# PrometheusRule for kube-prometheus-stack. Not applied by this repo's Helm
+# chart (see deploy/helm/bank-service/values.yaml monitoring.serviceMonitor)
+# - drop this alongside it, in the same namespace the Prometheus Operator
+# watches, once a real Prometheus is in-cluster.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: bank-service-alerts
+  labels:
+    app.kubernetes.io/name: bank-service
+    release: kube-prometheus-stack
+spec:
+  groups:
+    - name: bank-service.rules
+      rules:
+        - alert: BankServiceHighErrorRate
+          expr: |
+            sum(rate(http_requests_total{route=~"/api/.*", status=~"Internal Server Error"}[5m]))
+            /
+            sum(rate(http_requests_total{route=~"/api/.*"}[5m]))
+            > 0.05
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "bank-service 5xx rate above 5%"
+            description: "Error rate has been above 5% for 5 minutes on the accounts API. Check recent deploys and DB health."
+
+        - alert: BankServiceHighLatency
+          expr: |
+            histogram_quantile(0.99,
+              sum(rate(http_request_duration_seconds_bucket{route="/api/accounts/{id}"}[5m])) by (le)
+            ) > 0.5
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "bank-service p99 latency above 500ms"
+            description: "p99 latency for GET /api/accounts/{id} has exceeded 500ms for 10 minutes."
+
+        - alert: BankServiceDatabaseDown
+          expr: db_up == 0
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: "bank-service cannot reach Postgres"
+            description: "db_up has been 0 for 1 minute - readiness probes are failing and pods will stop receiving traffic. Check RDS status."
+
+        - alert: BankServiceCrashLooping
+          expr: increase(kube_pod_container_status_restarts_total{container="bank-service"}[15m]) > 3
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "bank-service pod restarting repeatedly"
+            description: "{{ $labels.pod }} has restarted more than 3 times in 15 minutes."
+
+        - alert: BankServiceNoPodsReady
+          expr: |
+            kube_deployment_status_replicas_available{deployment="bank-service"} == 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "bank-service has zero available replicas"
+            description: "No pods are passing readiness. The service is fully down."

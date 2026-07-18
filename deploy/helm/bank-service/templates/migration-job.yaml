@@ -1,0 +1,85 @@
+{{- if .Values.migration.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "bank-service.fullname" . }}-migrate
+  labels:
+    {{- include "bank-service.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "1"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        {{- include "bank-service.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: migration
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          image: {{ .Values.migration.image }}
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              echo "waiting for postgres to accept connections..."
+              for i in $(seq 1 30); do
+                if psql "$DATABASE_URL" -c 'select 1' >/dev/null 2>&1; then
+                  break
+                fi
+                sleep 2
+              done
+              for f in /migrations/*.sql; do
+                echo "applying $f"
+                if [ "$(basename "$f")" = "0003_roles.sql" ]; then
+                  # The only file that creates/reconciles the two
+                  # least-privilege roles, so it's the only one that needs
+                  # the role passwords substituted in.
+                  psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
+                    -v api_password="$API_DB_PASSWORD" \
+                    -v consumer_password="$CONSUMER_DB_PASSWORD" \
+                    -f "$f"
+                else
+                  psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"
+                fi
+              done
+          env:
+            - name: API_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "bank-service.appSecretName" . }}
+                  key: PASSWORD
+            - name: CONSUMER_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "bank-service.consumerSecretName" . }}
+                  key: PASSWORD
+          envFrom:
+            - secretRef:
+                # The migration Job is the one place the master/admin
+                # connection is used - it needs CREATE ROLE / GRANT, which
+                # neither application role has (see 0003_roles.sql).
+                name: {{ include "bank-service.adminSecretName" . }}
+          volumeMounts:
+            - name: migrations
+              mountPath: /migrations
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: migrations
+          configMap:
+            name: {{ include "bank-service.fullname" . }}-migrations
+{{- end }}

@@ -1,0 +1,28 @@
+{{- if .Values.ingress.enabled }}
+# In AWS this is served by the AWS Load Balancer Controller (ALB target-type
+# ip), terminating TLS via ACM - see values-prod-notes.yaml. Not exercised
+# locally: minikube has no ingress controller installed by default in this
+# repo's validation, so the live smoke test used port-forward instead (see
+# README.md).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "bank-service.fullname" . }}
+  labels:
+    {{- include "bank-service.labels" . | nindent 4 }}
+  annotations:
+    {{- toYaml .Values.ingress.annotations | nindent 4 }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  rules:
+    - host: {{ .Values.ingress.host }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "bank-service.fullname" . }}
+                port:
+                  number: {{ .Values.service.port }}
+{{- end }}
